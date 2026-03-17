@@ -946,6 +946,9 @@ bool CopyDependentDLLs(const std::vector<std::string> &dllList, const std::strin
     int skippedCount = 0;
     int ignoredCount = 0;
 
+    std::vector<std::string> succeededDLLs;
+    std::vector<std::string> failedDLLs;
+
     for (const auto &dllName : dllList)
     {
         std::cout << "Searching for: " << dllName << std::endl;
@@ -963,6 +966,7 @@ bool CopyDependentDLLs(const std::vector<std::string> &dllList, const std::strin
         {
             std::cerr << "Error: Unable to find DLL file: " << dllName << std::endl;
             failCount++;
+            failedDLLs.push_back(dllName);
             continue;
         }
 
@@ -988,14 +992,38 @@ bool CopyDependentDLLs(const std::vector<std::string> &dllList, const std::strin
         if (CopyFileToDirectory(dllPath, destDir))
         {
             successCount++;
+            succeededDLLs.push_back(dllName + ":" + dllPath);
         }
         else
         {
             failCount++;
+            failedDLLs.push_back(dllName);
         }
     }
 
     std::cout << "\nCopy completed: " << successCount << " succeeded, " << failCount << " failed, " << skippedCount << " system core DLLs skipped, " << ignoredCount << " ignored by user" << std::endl;
+
+    // 如果有成功的 DLL，输出成功列表
+    if (!succeededDLLs.empty())
+    {
+        std::cout << "\nSuccessfully copied DLLs:" << std::endl;
+        for (const auto& dllPath : succeededDLLs)
+        {
+            std::cout << "  [OK] " << dllPath << std::endl;
+        }
+    }
+
+    // 如果有失败的 DLL，输出失败列表
+    if (!failedDLLs.empty())
+    {
+        std::cout << "\nFailed to copy DLLs:" << std::endl;
+        for (const auto& dll : failedDLLs)
+        {
+            std::cout << "  [FAIL] " << dll << std::endl;
+        }
+        std::cout << "\nSome DLL files failed to copy, please check error messages above" << std::endl;
+    }
+
     return failCount == 0;
 }
 
