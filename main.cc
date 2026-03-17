@@ -178,14 +178,104 @@ std::vector<std::string> GetDelayLoadDLLs(PIMAGE_NT_HEADERS ntHeaders, LPVOID ba
     return dllList;
 }
 
+// PE文件架构类型枚举
+enum class PEArchitecture {
+    Unknown,
+    x86,    // 32-bit (IMAGE_FILE_MACHINE_I386)
+    x64,    // 64-bit (IMAGE_FILE_MACHINE_AMD64)
+    ARM,    // ARM
+    ARM64   // ARM64
+};
+
+// 将架构转换为字符串
+std::string ArchitectureToString(PEArchitecture arch)
+{
+    switch (arch)
+    {
+        case PEArchitecture::x86:
+            return "x86 (32-bit)";
+        case PEArchitecture::x64:
+            return "x64 (64-bit)";
+        case PEArchitecture::ARM:
+            return "ARM (32-bit)";
+        case PEArchitecture::ARM64:
+            return "ARM64 (64-bit)";
+        case PEArchitecture::Unknown:
+        default:
+            return "Unknown";
+    }
+}
+
+// 检查两个架构是否兼容
+bool AreArchitecturesCompatible(PEArchitecture arch1, PEArchitecture arch2)
+{
+    // 如果任一架构为Unknown，则认为兼容（保持向后兼容）
+    if (arch1 == PEArchitecture::Unknown || arch2 == PEArchitecture::Unknown)
+    {
+        return true;
+    }
+    // 架构必须完全匹配
+    return arch1 == arch2;
+}
+
+// 检测PE文件的架构
+PEArchitecture DetectPEArchitecture(const std::string& filePath)
+{
+    HandleGuard hFile(CreateFileA(filePath.c_str(), GENERIC_READ, FILE_SHARE_READ,
+                                  NULL, OPEN_EXISTING, 0, NULL));
+    if (hFile == INVALID_HANDLE_VALUE)
+    {
+        return PEArchitecture::Unknown;
+    }
+
+    HandleGuard hMap(CreateFileMapping(hFile, NULL, PAGE_READONLY, 0, 0, NULL));
+    if (!hMap)
+    {
+        return PEArchitecture::Unknown;
+    }
+
+    MappedViewGuard baseAddress(MapViewOfFile(hMap, FILE_MAP_READ, 0, 0, 0));
+    if (!baseAddress)
+    {
+        return PEArchitecture::Unknown;
+    }
+
+    PIMAGE_DOS_HEADER dosHeader = (PIMAGE_DOS_HEADER)(LPVOID)baseAddress;
+    if (dosHeader->e_magic != IMAGE_DOS_SIGNATURE)
+    {
+        return PEArchitecture::Unknown;
+    }
+
+    PIMAGE_NT_HEADERS ntHeaders = (PIMAGE_NT_HEADERS)((BYTE *)(LPVOID)baseAddress + dosHeader->e_lfanew);
+    if (ntHeaders->Signature != IMAGE_NT_SIGNATURE)
+    {
+        return PEArchitecture::Unknown;
+    }
+
+    // 根据Machine字段判断架构
+    switch (ntHeaders->FileHeader.Machine)
+    {
+        case IMAGE_FILE_MACHINE_I386:
+            return PEArchitecture::x86;
+        case IMAGE_FILE_MACHINE_AMD64:
+            return PEArchitecture::x64;
+        case IMAGE_FILE_MACHINE_ARM:
+            return PEArchitecture::ARM;
+        case IMAGE_FILE_MACHINE_ARM64:
+            return PEArchitecture::ARM64;
+        default:
+            return PEArchitecture::Unknown;
+    }
+}
+
 // 前向声明
 std::vector<std::string> ParseFileDependencies(const char *filePath);
 bool IsSystemCoreDLL(const std::string &dllName);
 bool IsSystemDirectory(const std::string &dllPath);
-std::vector<std::string> GetDependentDLLs(const char *executablePath, bool recursive = false, const std::vector<std::string> &extraDirs = {});
-std::string FindDLLFile(const std::string &dllName, const std::string &exeDir, const std::vector<std::string> &extraDirs = {});
-void GetRecursiveDependentDLLs(const std::string &dllPath, const std::string &exeDir, int depth, const std::vector<std::string> &extraDirs = {});
-bool CopyDependentDLLs(const std::vector<std::string> &dllList, const std::string &exePath, const std::string &destDir, const std::vector<std::string> &extraDirs = {}, bool copyAll = false);
+std::vector<std::string> GetDependentDLLs(const char *executablePath, bool recursive = false, const std::vector<std::string> &extraDirs = {}, PEArchitecture targetArch = PEArchitecture::Unknown);
+std::string FindDLLFile(const std::string &dllName, const std::string &exeDir, const std::vector<std::string> &extraDirs = {}, PEArchitecture targetArch = PEArchitecture::Unknown);
+void GetRecursiveDependentDLLs(const std::string &dllPath, const std::string &exeDir, int depth, const std::vector<std::string> &extraDirs = {}, PEArchitecture targetArch = PEArchitecture::Unknown);
+bool CopyDependentDLLs(const std::vector<std::string> &dllList, const std::string &exePath, const std::string &destDir, const std::vector<std::string> &extraDirs = {}, bool copyAll = false, PEArchitecture targetArch = PEArchitecture::Unknown);
 
 // 全局集合，用于跟踪已处理的DLL，避免重复和循环依赖
 std::set<std::string> processedDLLs;
@@ -202,7 +292,7 @@ std::set<std::string> g_ignoredDLLPaths;
 std::set<std::string> g_ignoredDirectories;
 
 // 递归获取DLL依赖
-void GetRecursiveDependentDLLs(const std::string &dllPath, const std::string &exeDir, int depth, const std::vector<std::string> &extraDirs)
+void GetRecursiveDependentDLLs(const std::string &dllPath, const std::string &exeDir, int depth, const std::vector<std::string> &extraDirs, PEArchitecture targetArch)
 {
     if (depth > g_maxRecursionDepth)
     {
@@ -240,21 +330,22 @@ void GetRecursiveDependentDLLs(const std::string &dllPath, const std::string &ex
             continue;
         }
 
-        // 查找依赖的DLL
-        std::string depPath = FindDLLFile(depName, exeDir, extraDirs);
+        // 查找依赖的DLL（用于验证存在性和递归分析）
+        std::string depPath = FindDLLFile(depName, exeDir, extraDirs, targetArch);
         if (depPath.empty())
         {
             std::cerr << std::string((depth + 1) * 2, ' ') << "Warning: Unable to find: " << depName << std::endl;
-            // 即使找不到也添加到集合中
+            // 即使找不到也添加到集合中（使用DLL名称）
             globalDLLSet.insert(depName);
             continue;
         }
 
-        // 添加到全局集合
+        // 添加到全局集合（使用DLL名称，而不是路径）
+        // 这样在复制阶段会重新查找架构匹配的DLL
         globalDLLSet.insert(depName);
 
         // 递归分析这个DLL的依赖
-        GetRecursiveDependentDLLs(depPath, exeDir, depth + 1, extraDirs);
+        GetRecursiveDependentDLLs(depPath, exeDir, depth + 1, extraDirs, targetArch);
     }
 }
 
@@ -395,7 +486,7 @@ std::vector<std::string> ParseFileDependencies(const char *filePath)
 }
 
 // 公共接口：获取依赖DLL（支持递归）
-std::vector<std::string> GetDependentDLLs(const char *executablePath, bool recursive, const std::vector<std::string> &extraDirs)
+std::vector<std::string> GetDependentDLLs(const char *executablePath, bool recursive, const std::vector<std::string> &extraDirs, PEArchitecture targetArch)
 {
     if (recursive)
     {
@@ -408,7 +499,7 @@ std::vector<std::string> GetDependentDLLs(const char *executablePath, bool recur
         std::string exeDir = std::filesystem::path(executablePath).parent_path().string();
 
         // 开始递归分析
-        GetRecursiveDependentDLLs(executablePath, exeDir, 0, extraDirs);
+        GetRecursiveDependentDLLs(executablePath, exeDir, 0, extraDirs, targetArch);
 
         std::cout << "\n=== Recursive Analysis Complete ===" << std::endl;
         std::cout << "Total " << globalDLLSet.size() << " unique DLL(s) found (including all levels)" << std::endl;
@@ -860,16 +951,41 @@ bool ShouldIgnoreDLL(const std::string &dllName, const std::string &dllPath)
     return false;
 }
 
-// 搜索DLL文件
-std::string FindDLLFile(const std::string &dllName, const std::string &exeDir, const std::vector<std::string> &extraDirs)
+// 搜索DLL文件（支持架构感知查找）
+std::string FindDLLFile(const std::string &dllName, const std::string &exeDir, const std::vector<std::string> &extraDirs, PEArchitecture targetArch)
 {
+    std::string foundPath = ""; // 用于存储找到的路径（如果没有架构匹配）
+
     // 首先在额外指定的目录中查找（最高优先级）
     for (const auto &dir : extraDirs)
     {
         std::string dllPath = dir + "\\" + dllName;
         if (PathFileExistsA(dllPath.c_str()))
         {
-            return dllPath;
+            if (targetArch == PEArchitecture::Unknown)
+            {
+                // 如果没有指定目标架构，直接返回第一个找到的文件
+                return dllPath;
+            }
+
+            // 检查架构
+            PEArchitecture dllArch = DetectPEArchitecture(dllPath);
+            if (AreArchitecturesCompatible(dllArch, targetArch))
+            {
+                ConsoleColors::Print(ConsoleColors::GREEN, "  Found: ");
+                std::cout << dllPath << " → Checking architecture → ";
+                ConsoleColors::Print(ConsoleColors::BRIGHT_GREEN, ArchitectureToString(dllArch));
+                ConsoleColors::PrintLn(ConsoleColors::GREEN, " ✓ Match");
+                return dllPath;
+            }
+            else
+            {
+                ConsoleColors::Print(ConsoleColors::YELLOW, "  Found: ");
+                std::cout << dllPath << " → Checking architecture → ";
+                ConsoleColors::Print(ConsoleColors::BRIGHT_YELLOW, ArchitectureToString(dllArch));
+                ConsoleColors::Print(ConsoleColors::YELLOW, " ✗ Mismatch");
+                std::cout << " (target: " << ArchitectureToString(targetArch) << "), continuing search" << std::endl;
+            }
         }
     }
 
@@ -877,7 +993,29 @@ std::string FindDLLFile(const std::string &dllName, const std::string &exeDir, c
     std::string dllPath = exeDir + "\\" + dllName;
     if (PathFileExistsA(dllPath.c_str()))
     {
-        return dllPath;
+        if (targetArch == PEArchitecture::Unknown)
+        {
+            return dllPath;
+        }
+
+        // 检查架构
+        PEArchitecture dllArch = DetectPEArchitecture(dllPath);
+        if (AreArchitecturesCompatible(dllArch, targetArch))
+        {
+            ConsoleColors::Print(ConsoleColors::GREEN, "  Found: ");
+            std::cout << dllPath << " → Checking architecture → ";
+            ConsoleColors::Print(ConsoleColors::BRIGHT_GREEN, ArchitectureToString(dllArch));
+            ConsoleColors::PrintLn(ConsoleColors::GREEN, " ✓ Match");
+            return dllPath;
+        }
+        else
+        {
+            ConsoleColors::Print(ConsoleColors::YELLOW, "  Found: ");
+            std::cout << dllPath << " → Checking architecture → ";
+            ConsoleColors::Print(ConsoleColors::BRIGHT_YELLOW, ArchitectureToString(dllArch));
+            ConsoleColors::Print(ConsoleColors::YELLOW, " ✗ Mismatch");
+            std::cout << " (target: " << ArchitectureToString(targetArch) << "), continuing search" << std::endl;
+        }
     }
 
     // 在当前工作目录中查找
@@ -886,21 +1024,87 @@ std::string FindDLLFile(const std::string &dllName, const std::string &exeDir, c
     dllPath = std::string(currentDir) + "\\" + dllName;
     if (PathFileExistsA(dllPath.c_str()))
     {
-        return dllPath;
+        if (targetArch == PEArchitecture::Unknown)
+        {
+            return dllPath;
+        }
+
+        // 检查架构
+        PEArchitecture dllArch = DetectPEArchitecture(dllPath);
+        if (AreArchitecturesCompatible(dllArch, targetArch))
+        {
+            ConsoleColors::Print(ConsoleColors::GREEN, "  Found: ");
+            std::cout << dllPath << " → Checking architecture → ";
+            ConsoleColors::Print(ConsoleColors::BRIGHT_GREEN, ArchitectureToString(dllArch));
+            ConsoleColors::PrintLn(ConsoleColors::GREEN, " ✓ Match");
+            return dllPath;
+        }
+        else
+        {
+            ConsoleColors::Print(ConsoleColors::YELLOW, "  Found: ");
+            std::cout << dllPath << " → Checking architecture → ";
+            ConsoleColors::Print(ConsoleColors::BRIGHT_YELLOW, ArchitectureToString(dllArch));
+            ConsoleColors::Print(ConsoleColors::YELLOW, " ✗ Mismatch");
+            std::cout << " (target: " << ArchitectureToString(targetArch) << "), continuing search" << std::endl;
+        }
     }
 
     // 在系统目录中查找
     dllPath = GetSystemDirectory() + "\\" + dllName;
     if (PathFileExistsA(dllPath.c_str()))
     {
-        return dllPath;
+        if (targetArch == PEArchitecture::Unknown)
+        {
+            return dllPath;
+        }
+
+        // 检查架构
+        PEArchitecture dllArch = DetectPEArchitecture(dllPath);
+        if (AreArchitecturesCompatible(dllArch, targetArch))
+        {
+            ConsoleColors::Print(ConsoleColors::GREEN, "  Found: ");
+            std::cout << dllPath << " → Checking architecture → ";
+            ConsoleColors::Print(ConsoleColors::BRIGHT_GREEN, ArchitectureToString(dllArch));
+            ConsoleColors::PrintLn(ConsoleColors::GREEN, " ✓ Match");
+            return dllPath;
+        }
+        else
+        {
+            ConsoleColors::Print(ConsoleColors::YELLOW, "  Found: ");
+            std::cout << dllPath << " → Checking architecture → ";
+            ConsoleColors::Print(ConsoleColors::BRIGHT_YELLOW, ArchitectureToString(dllArch));
+            ConsoleColors::Print(ConsoleColors::YELLOW, " ✗ Mismatch");
+            std::cout << " (target: " << ArchitectureToString(targetArch) << "), continuing search" << std::endl;
+        }
     }
 
     // 在Windows目录中查找
     dllPath = GetWindowsDirectory() + "\\" + dllName;
     if (PathFileExistsA(dllPath.c_str()))
     {
-        return dllPath;
+        if (targetArch == PEArchitecture::Unknown)
+        {
+            return dllPath;
+        }
+
+        // 检查架构
+        PEArchitecture dllArch = DetectPEArchitecture(dllPath);
+        if (AreArchitecturesCompatible(dllArch, targetArch))
+        {
+            ConsoleColors::Print(ConsoleColors::GREEN, "  Found: ");
+            std::cout << dllPath << " → Checking architecture → ";
+            ConsoleColors::Print(ConsoleColors::BRIGHT_GREEN, ArchitectureToString(dllArch));
+            ConsoleColors::PrintLn(ConsoleColors::GREEN, " ✓ Match");
+            return dllPath;
+        }
+        else
+        {
+            ConsoleColors::Print(ConsoleColors::YELLOW, "  Found: ");
+            std::cout << dllPath << " → Checking architecture → ";
+            ConsoleColors::Print(ConsoleColors::BRIGHT_YELLOW, ArchitectureToString(dllArch));
+            ConsoleColors::Print(ConsoleColors::YELLOW, " ✗ Mismatch");
+            std::cout << " (target: " << ArchitectureToString(targetArch) << "), continuing search" << std::endl;
+        }
     }
 
     // 在PATH环境变量指定的目录中查找
@@ -910,10 +1114,33 @@ std::string FindDLLFile(const std::string &dllName, const std::string &exeDir, c
         dllPath = dir + "\\" + dllName;
         if (PathFileExistsA(dllPath.c_str()))
         {
-            return dllPath;
+            if (targetArch == PEArchitecture::Unknown)
+            {
+                return dllPath;
+            }
+
+            // 检查架构
+            PEArchitecture dllArch = DetectPEArchitecture(dllPath);
+            if (AreArchitecturesCompatible(dllArch, targetArch))
+            {
+                ConsoleColors::Print(ConsoleColors::GREEN, "  Found: ");
+                std::cout << dllPath << " → Checking architecture → ";
+                ConsoleColors::Print(ConsoleColors::BRIGHT_GREEN, ArchitectureToString(dllArch));
+                ConsoleColors::PrintLn(ConsoleColors::GREEN, " ✓ Match");
+                return dllPath;
+            }
+            else
+            {
+                ConsoleColors::Print(ConsoleColors::YELLOW, "  Found: ");
+                std::cout << dllPath << " → Checking architecture → ";
+                ConsoleColors::Print(ConsoleColors::BRIGHT_YELLOW, ArchitectureToString(dllArch));
+                ConsoleColors::Print(ConsoleColors::YELLOW, " ✗ Mismatch");
+                std::cout << " (target: " << ArchitectureToString(targetArch) << "), continuing search" << std::endl;
+            }
         }
     }
 
+    // 未找到匹配的架构
     return ""; // 未找到
 }
 
@@ -960,7 +1187,7 @@ bool CopyFileToDirectory(const std::string &sourcePath, const std::string &destD
 }
 
 // 复制所有依赖的DLL
-bool CopyDependentDLLs(const std::vector<std::string> &dllList, const std::string &exePath, const std::string &destDir, const std::vector<std::string> &extraDirs, bool copyAll)
+bool CopyDependentDLLs(const std::vector<std::string> &dllList, const std::string &exePath, const std::string &destDir, const std::vector<std::string> &extraDirs, bool copyAll, PEArchitecture targetArch)
 {
     if (dllList.empty())
     {
@@ -995,7 +1222,7 @@ bool CopyDependentDLLs(const std::vector<std::string> &dllList, const std::strin
     int ignoredCount = 0;
 
     std::vector<std::string> succeededDLLs;
-    std::vector<std::string> failedDLLs;
+    std::vector<std::string> failedDLLs;  // Format: "dllName:reason"
 
     for (const auto &dllName : dllList)
     {
@@ -1011,13 +1238,96 @@ bool CopyDependentDLLs(const std::vector<std::string> &dllList, const std::strin
             continue;
         }
 
-        std::string dllPath = FindDLLFile(dllName, exeDir, extraDirs);
+        std::string dllPath = FindDLLFile(dllName, exeDir, extraDirs, targetArch);
         if (dllPath.empty())
         {
-            ConsoleColors::Print(ConsoleColors::RED, "✗ Error: Unable to find DLL file: ");
-            ConsoleColors::PrintLn(ConsoleColors::BRIGHT_RED, dllName);
+            std::string reason;
+
+            // 检查是否有任何搜索位置存在该文件（无论架构是否匹配）
+            bool anyFileFound = false;
+
+            // 检查各个搜索位置
+            for (const auto &dir : extraDirs)
+            {
+                std::string testPath = dir + "\\" + dllName;
+                if (PathFileExistsA(testPath.c_str()))
+                {
+                    anyFileFound = true;
+                    break;
+                }
+            }
+
+            if (!anyFileFound)
+            {
+                std::string testPath = exeDir + "\\" + dllName;
+                if (PathFileExistsA(testPath.c_str()))
+                {
+                    anyFileFound = true;
+                }
+            }
+
+            if (!anyFileFound)
+            {
+                char currentDir[MAX_PATH];
+                GetCurrentDirectoryA(MAX_PATH, currentDir);
+                std::string testPath = std::string(currentDir) + "\\" + dllName;
+                if (PathFileExistsA(testPath.c_str()))
+                {
+                    anyFileFound = true;
+                }
+            }
+
+            if (!anyFileFound)
+            {
+                std::string testPath = GetSystemDirectory() + "\\" + dllName;
+                if (PathFileExistsA(testPath.c_str()))
+                {
+                    anyFileFound = true;
+                }
+            }
+
+            if (!anyFileFound)
+            {
+                std::string testPath = GetWindowsDirectory() + "\\" + dllName;
+                if (PathFileExistsA(testPath.c_str()))
+                {
+                    anyFileFound = true;
+                }
+            }
+
+            if (!anyFileFound)
+            {
+                auto pathDirs = GetPathDirectories();
+                for (const auto &dir : pathDirs)
+                {
+                    std::string testPath = dir + "\\" + dllName;
+                    if (PathFileExistsA(testPath.c_str()))
+                    {
+                        anyFileFound = true;
+                        break;
+                    }
+                }
+            }
+
+            // 根据是否找到文件和是否指定架构来决定错误消息
+            if (anyFileFound && targetArch != PEArchitecture::Unknown)
+            {
+                reason = "No matching architecture found (need " + ArchitectureToString(targetArch) + ")";
+            }
+            else if (!anyFileFound)
+            {
+                reason = "File not found in any search location";
+            }
+            else
+            {
+                reason = "File not found in any search location";
+            }
+
+            ConsoleColors::Print(ConsoleColors::RED, "✗ Error: ");
+            ConsoleColors::Print(ConsoleColors::BRIGHT_RED, dllName);
+            std::cout << " - " << reason << std::endl;
             failCount++;
-            failedDLLs.push_back(dllName);
+            failedDLLs.push_back(dllName + ":" + reason);
             continue;
         }
 
@@ -1046,12 +1356,13 @@ bool CopyDependentDLLs(const std::vector<std::string> &dllList, const std::strin
         if (CopyFileToDirectory(dllPath, destDir))
         {
             successCount++;
-            succeededDLLs.push_back(dllName + ":" + dllPath);
+            succeededDLLs.push_back(dllName + "::" + dllPath);
         }
         else
         {
+            std::string reason = "Copy failed (Error code: " + std::to_string(GetLastError()) + ")";
             failCount++;
-            failedDLLs.push_back(dllName);
+            failedDLLs.push_back(dllName + ":" + reason);
         }
     }
 
@@ -1071,22 +1382,21 @@ bool CopyDependentDLLs(const std::vector<std::string> &dllList, const std::strin
     {
         std::cout << "\n";
         ConsoleColors::PrintLn(ConsoleColors::GREEN, "Successfully copied DLLs:");
-        for (const auto& dllPath : succeededDLLs)
+        for (const auto& dllInfo : succeededDLLs)
         {
             std::cout << "  ";
             ConsoleColors::Print(ConsoleColors::GREEN, "[OK] ");
-            // 分割 DLL 名称和路径
-            size_t colonPos = dllPath.find(':');
-            if (colonPos != std::string::npos) {
-                std::string dllName = dllPath.substr(0, colonPos);
-                std::string path = dllPath.substr(colonPos + 1);
+            // 分割 DLL 名称和路径（使用 "::" 作为分隔符以避免与 Windows 路径中的 ":" 冲突）
+            size_t sepPos = dllInfo.find("::");
+            if (sepPos != std::string::npos) {
+                std::string dllName = dllInfo.substr(0, sepPos);
+                std::string path = dllInfo.substr(sepPos + 2);
                 ConsoleColors::Print(ConsoleColors::BRIGHT_CYAN, dllName);
-                std::cout << ":";
-                ConsoleColors::Print(ConsoleColors::DEFAULT, path);
+                std::cout << ": ";
+                ConsoleColors::PrintLn(ConsoleColors::DEFAULT, path);
             } else {
-                ConsoleColors::Print(ConsoleColors::DEFAULT, dllPath);
+                ConsoleColors::PrintLn(ConsoleColors::DEFAULT, dllInfo);
             }
-            std::cout << std::endl;
         }
     }
 
@@ -1095,11 +1405,21 @@ bool CopyDependentDLLs(const std::vector<std::string> &dllList, const std::strin
     {
         std::cout << "\n";
         ConsoleColors::PrintLn(ConsoleColors::RED, "Failed to copy DLLs:");
-        for (const auto& dll : failedDLLs)
+        for (const auto& dllInfo : failedDLLs)
         {
             std::cout << "  ";
             ConsoleColors::Print(ConsoleColors::RED, "[FAIL] ");
-            ConsoleColors::PrintLn(ConsoleColors::BRIGHT_RED, dll);
+            // 分割 DLL 名称和原因
+            size_t colonPos = dllInfo.find(':');
+            if (colonPos != std::string::npos) {
+                std::string dllName = dllInfo.substr(0, colonPos);
+                std::string reason = dllInfo.substr(colonPos + 1);
+                ConsoleColors::Print(ConsoleColors::BRIGHT_RED, dllName);
+                std::cout << " - ";
+                ConsoleColors::PrintLn(ConsoleColors::YELLOW, reason);
+            } else {
+                ConsoleColors::PrintLn(ConsoleColors::BRIGHT_RED, dllInfo);
+            }
         }
         std::cout << "\n";
         ConsoleColors::PrintLn(ConsoleColors::RED, "Some DLL files failed to copy, please check error messages above");
@@ -1270,7 +1590,18 @@ int main(int argc, char *argv[])
         }
     }
 
-    auto dlls = GetDependentDLLs(exe_path, recursiveMode, extraSearchDirs);
+    // 检测目标文件的架构
+    ConsoleColors::PrintLn(ConsoleColors::CYAN, "=== Analyzing Target Executable ===");
+    PEArchitecture targetArch = DetectPEArchitecture(exe_path);
+    if (targetArch == PEArchitecture::Unknown)
+    {
+        std::cerr << "Error: Unable to detect PE architecture of target file" << std::endl;
+        return 1;
+    }
+    std::cout << "Target file architecture: ";
+    ConsoleColors::PrintLn(ConsoleColors::BRIGHT_GREEN, ArchitectureToString(targetArch));
+
+    auto dlls = GetDependentDLLs(exe_path, recursiveMode, extraSearchDirs, targetArch);
 
     std::cout << "\n";
     ConsoleColors::PrintLn(ConsoleColors::CYAN, "=== Dependent DLL List ===");
@@ -1286,7 +1617,7 @@ int main(int argc, char *argv[])
     {
         std::cout << "\n";
         ConsoleColors::PrintLn(ConsoleColors::CYAN, "=== Starting to Copy DLL Files ===");
-        if (CopyDependentDLLs(dlls, exe_path, destDir, extraSearchDirs, copyAllMode))
+        if (CopyDependentDLLs(dlls, exe_path, destDir, extraSearchDirs, copyAllMode, targetArch))
         {
             ConsoleColors::PrintLn(ConsoleColors::GREEN, "✓ All DLL files copied successfully!");
         }
