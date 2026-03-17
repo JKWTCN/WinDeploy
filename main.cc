@@ -12,6 +12,48 @@
 #pragma comment(lib, "dbghelp.lib")
 #pragma comment(lib, "shlwapi.lib")
 
+// 控制台颜色代码
+namespace ConsoleColors {
+    enum Color {
+        DEFAULT = 7,        // 默认白色
+        GREEN = 10,         // 绿色
+        RED = 12,           // 红色
+        YELLOW = 14,        // 黄色
+        BLUE = 9,           // 蓝色
+        CYAN = 11,          // 青色
+        MAGENTA = 13,       // 洋红色
+        BRIGHT_GREEN = 10,  // 亮绿色
+        BRIGHT_RED = 12,    // 亮红色
+        BRIGHT_YELLOW = 14, // 亮黄色
+        BRIGHT_BLUE = 9,    // 亮蓝色
+        BRIGHT_CYAN = 11,   // 亮青色
+        BRIGHT_MAGENTA = 13 // 亮洋红色
+    };
+
+    // 设置控制台文本颜色
+    inline void SetColor(Color color) {
+        SetConsoleTextAttribute(GetStdHandle(STD_OUTPUT_HANDLE), color);
+    }
+
+    // 重置为默认颜色
+    inline void Reset() {
+        SetConsoleTextAttribute(GetStdHandle(STD_OUTPUT_HANDLE), DEFAULT);
+    }
+
+    // 带颜色的输出辅助函数
+    inline void Print(Color color, const std::string& text) {
+        SetColor(color);
+        std::cout << text;
+        Reset();
+    }
+
+    inline void PrintLn(Color color, const std::string& text) {
+        SetColor(color);
+        std::cout << text << std::endl;
+        Reset();
+    }
+}
+
 // RAII包装器用于Windows句柄
 struct HandleGuard
 {
@@ -904,12 +946,15 @@ bool CopyFileToDirectory(const std::string &sourcePath, const std::string &destD
     // 复制文件
     if (CopyFileA(sourcePath.c_str(), destPath.c_str(), FALSE))
     {
-        std::cout << "Successfully copied: " << fileName << std::endl;
+        ConsoleColors::Print(ConsoleColors::GREEN, "✓ Successfully copied: ");
+        ConsoleColors::PrintLn(ConsoleColors::BRIGHT_CYAN, fileName);
         return true;
     }
     else
     {
-        std::cerr << "Error: Unable to copy file " << fileName << " (Error code: " << GetLastError() << ")" << std::endl;
+        ConsoleColors::Print(ConsoleColors::RED, "✗ Error: Unable to copy file ");
+        ConsoleColors::Print(ConsoleColors::BRIGHT_RED, fileName);
+        std::cout << " (Error code: " << GetLastError() << ")" << std::endl;
         return false;
     }
 }
@@ -926,19 +971,22 @@ bool CopyDependentDLLs(const std::vector<std::string> &dllList, const std::strin
     // 获取可执行文件所在目录
     std::string exeDir = std::filesystem::path(exePath).parent_path().string();
 
-    std::cout << "\nStarting to copy DLL files to target directory: " << destDir << std::endl;
+    std::cout << "\n";
+    ConsoleColors::Print(ConsoleColors::CYAN, "Starting to copy DLL files to target directory: ");
+    ConsoleColors::PrintLn(ConsoleColors::BRIGHT_CYAN, destDir);
     if (copyAll)
     {
-        std::cout << "Note: --copy-all flag is set, system core DLLs will NOT be skipped" << std::endl;
+        ConsoleColors::PrintLn(ConsoleColors::YELLOW, "Note: --copy-all flag is set, system core DLLs will NOT be skipped");
     }
     else
     {
-        std::cout << "Note: System core DLLs (such as KERNEL32.dll, etc.) will be automatically skipped as these are Windows built-in DLLs" << std::endl;
+        ConsoleColors::PrintLn(ConsoleColors::YELLOW, "Note: System core DLLs (such as KERNEL32.dll, etc.) will be automatically skipped as these are Windows built-in DLLs");
     }
 
     if (!g_ignoredDLLNames.empty() || !g_ignoredDLLPaths.empty() || !g_ignoredDirectories.empty())
     {
-        std::cout << "Note: " << (g_ignoredDLLNames.size() + g_ignoredDLLPaths.size() + g_ignoredDirectories.size()) << " item(s) in ignore list" << std::endl;
+        std::cout << "Note: ";
+        ConsoleColors::PrintLn(ConsoleColors::MAGENTA, std::to_string(g_ignoredDLLNames.size() + g_ignoredDLLPaths.size() + g_ignoredDirectories.size()) + " item(s) in ignore list");
     }
 
     int successCount = 0;
@@ -951,12 +999,14 @@ bool CopyDependentDLLs(const std::vector<std::string> &dllList, const std::strin
 
     for (const auto &dllName : dllList)
     {
-        std::cout << "Searching for: " << dllName << std::endl;
+        ConsoleColors::Print(ConsoleColors::CYAN, "Searching for: ");
+        std::cout << dllName << std::endl;
 
         // 检查是否为系统核心DLL
         if (!copyAll && IsSystemCoreDLL(dllName))
         {
-            std::cout << "[System Core DLL] Skipped: " << dllName << " (This is a Windows built-in DLL, no need to copy)" << std::endl;
+            ConsoleColors::Print(ConsoleColors::YELLOW, "[System Core DLL] Skipped: ");
+            std::cout << dllName << " (This is a Windows built-in DLL, no need to copy)" << std::endl;
             skippedCount++;
             continue;
         }
@@ -964,7 +1014,8 @@ bool CopyDependentDLLs(const std::vector<std::string> &dllList, const std::strin
         std::string dllPath = FindDLLFile(dllName, exeDir, extraDirs);
         if (dllPath.empty())
         {
-            std::cerr << "Error: Unable to find DLL file: " << dllName << std::endl;
+            ConsoleColors::Print(ConsoleColors::RED, "✗ Error: Unable to find DLL file: ");
+            ConsoleColors::PrintLn(ConsoleColors::BRIGHT_RED, dllName);
             failCount++;
             failedDLLs.push_back(dllName);
             continue;
@@ -973,7 +1024,8 @@ bool CopyDependentDLLs(const std::vector<std::string> &dllList, const std::strin
         // 检查 DLL 路径是否位于系统核心目录
         if (!copyAll && IsSystemDirectory(dllPath))
         {
-            std::cout << "[System Directory] Skipped: " << dllName << " (Location: " << dllPath << ")" << std::endl;
+            ConsoleColors::Print(ConsoleColors::YELLOW, "[System Directory] Skipped: ");
+            std::cout << dllName << " (Location: " << dllPath << ")" << std::endl;
             std::cout << "  This DLL is in a Windows system directory and will be available on the target system" << std::endl;
             skippedCount++;
             continue;
@@ -982,12 +1034,14 @@ bool CopyDependentDLLs(const std::vector<std::string> &dllList, const std::strin
         // 检查是否在忽略列表中
         if (ShouldIgnoreDLL(dllName, dllPath))
         {
-            std::cout << "[Ignored] Skipped: " << dllName << " (in ignore list)" << std::endl;
+            ConsoleColors::Print(ConsoleColors::MAGENTA, "[Ignored] Skipped: ");
+            std::cout << dllName << " (in ignore list)" << std::endl;
             ignoredCount++;
             continue;
         }
 
-        std::cout << "Found DLL: " << dllPath << std::endl;
+        ConsoleColors::Print(ConsoleColors::GREEN, "Found DLL: ");
+        std::cout << dllPath << std::endl;
 
         if (CopyFileToDirectory(dllPath, destDir))
         {
@@ -1001,27 +1055,54 @@ bool CopyDependentDLLs(const std::vector<std::string> &dllList, const std::strin
         }
     }
 
-    std::cout << "\nCopy completed: " << successCount << " succeeded, " << failCount << " failed, " << skippedCount << " system core DLLs skipped, " << ignoredCount << " ignored by user" << std::endl;
+    std::cout << "\n";
+    ConsoleColors::Print(ConsoleColors::CYAN, "Copy completed: ");
+    ConsoleColors::Print(ConsoleColors::GREEN, std::to_string(successCount) + " succeeded");
+    std::cout << ", ";
+    ConsoleColors::Print(ConsoleColors::RED, std::to_string(failCount) + " failed");
+    std::cout << ", ";
+    ConsoleColors::Print(ConsoleColors::YELLOW, std::to_string(skippedCount) + " system core DLLs skipped");
+    std::cout << ", ";
+    ConsoleColors::Print(ConsoleColors::MAGENTA, std::to_string(ignoredCount) + " ignored by user");
+    std::cout << std::endl;
 
     // 如果有成功的 DLL，输出成功列表
     if (!succeededDLLs.empty())
     {
-        std::cout << "\nSuccessfully copied DLLs:" << std::endl;
+        std::cout << "\n";
+        ConsoleColors::PrintLn(ConsoleColors::GREEN, "Successfully copied DLLs:");
         for (const auto& dllPath : succeededDLLs)
         {
-            std::cout << "  [OK] " << dllPath << std::endl;
+            std::cout << "  ";
+            ConsoleColors::Print(ConsoleColors::GREEN, "[OK] ");
+            // 分割 DLL 名称和路径
+            size_t colonPos = dllPath.find(':');
+            if (colonPos != std::string::npos) {
+                std::string dllName = dllPath.substr(0, colonPos);
+                std::string path = dllPath.substr(colonPos + 1);
+                ConsoleColors::Print(ConsoleColors::BRIGHT_CYAN, dllName);
+                std::cout << ":";
+                ConsoleColors::Print(ConsoleColors::DEFAULT, path);
+            } else {
+                ConsoleColors::Print(ConsoleColors::DEFAULT, dllPath);
+            }
+            std::cout << std::endl;
         }
     }
 
     // 如果有失败的 DLL，输出失败列表
     if (!failedDLLs.empty())
     {
-        std::cout << "\nFailed to copy DLLs:" << std::endl;
+        std::cout << "\n";
+        ConsoleColors::PrintLn(ConsoleColors::RED, "Failed to copy DLLs:");
         for (const auto& dll : failedDLLs)
         {
-            std::cout << "  [FAIL] " << dll << std::endl;
+            std::cout << "  ";
+            ConsoleColors::Print(ConsoleColors::RED, "[FAIL] ");
+            ConsoleColors::PrintLn(ConsoleColors::BRIGHT_RED, dll);
         }
-        std::cout << "\nSome DLL files failed to copy, please check error messages above" << std::endl;
+        std::cout << "\n";
+        ConsoleColors::PrintLn(ConsoleColors::RED, "Some DLL files failed to copy, please check error messages above");
     }
 
     return failCount == 0;
@@ -1191,24 +1272,27 @@ int main(int argc, char *argv[])
 
     auto dlls = GetDependentDLLs(exe_path, recursiveMode, extraSearchDirs);
 
-    std::cout << "\n=== Dependent DLL List ===" << std::endl;
+    std::cout << "\n";
+    ConsoleColors::PrintLn(ConsoleColors::CYAN, "=== Dependent DLL List ===");
     for (const auto &dll : dlls)
     {
         std::cout << dll << std::endl;
     }
-    std::cout << "Total: " << dlls.size() << " DLL(s)" << std::endl;
+    std::cout << "Total: ";
+    ConsoleColors::PrintLn(ConsoleColors::BRIGHT_CYAN, std::to_string(dlls.size()) + " DLL(s)");
 
     // 如果启用了复制模式，则复制DLL文件
     if (copyMode)
     {
-        std::cout << "\n=== Starting to Copy DLL Files ===" << std::endl;
+        std::cout << "\n";
+        ConsoleColors::PrintLn(ConsoleColors::CYAN, "=== Starting to Copy DLL Files ===");
         if (CopyDependentDLLs(dlls, exe_path, destDir, extraSearchDirs, copyAllMode))
         {
-            std::cout << "All DLL files copied successfully!" << std::endl;
+            ConsoleColors::PrintLn(ConsoleColors::GREEN, "✓ All DLL files copied successfully!");
         }
         else
         {
-            std::cout << "Some DLL files failed to copy, please check error messages" << std::endl;
+            ConsoleColors::PrintLn(ConsoleColors::RED, "✗ Some DLL files failed to copy, please check error messages");
             return 1;
         }
     }
