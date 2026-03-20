@@ -25,6 +25,13 @@ include_directories("${CMAKE_SOURCE_DIR}")
 set(
     SOURCES
     main.cc
+    pe_parser.cc
+    system_info.cc
+    dll_classifier.cc
+    config_loader.cc
+    dll_analyzer.cc
+    dll_finder.cc
+    file_operations.cc
 )
 add_executable(
     win_deploy
