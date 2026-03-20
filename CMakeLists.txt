@@ -20,9 +20,6 @@ set(PROJECT_NAME "win_deploy")
 # Set the C++ standard to C++ 17
 set(CMAKE_CXX_STANDARD 17)
 set(CXX_STANDARD_REQUIRED true)
-if(MSVC)
-    add_definitions("/Zc:__cplusplus" -DUNICODE=1)
-endif()
 include_directories("${CMAKE_SOURCE_DIR}")
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
@@ -35,6 +32,12 @@ add_executable(
     ${SOURCES}
     ${CMAKE_BINARY_DIR}/version.rc
 )
+
+# Apply MSVC-specific flags to C++ compilation only (not resource files)
+if(MSVC)
+    target_compile_options(win_deploy PRIVATE "/Zc:__cplusplus")
+    target_compile_definitions(win_deploy PRIVATE UNICODE=1)
+endif()
 
 # Set version properties for the executable
 set_target_properties(win_deploy PROPERTIES
