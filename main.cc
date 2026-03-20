@@ -13,8 +13,10 @@
 #pragma comment(lib, "shlwapi.lib")
 
 // 控制台颜色代码
-namespace ConsoleColors {
-    enum Color {
+namespace ConsoleColors
+{
+    enum Color
+    {
         DEFAULT = 7,        // 默认白色
         GREEN = 10,         // 绿色
         RED = 12,           // 红色
@@ -31,23 +33,27 @@ namespace ConsoleColors {
     };
 
     // 设置控制台文本颜色
-    inline void SetColor(Color color) {
+    inline void SetColor(Color color)
+    {
         SetConsoleTextAttribute(GetStdHandle(STD_OUTPUT_HANDLE), color);
     }
 
     // 重置为默认颜色
-    inline void Reset() {
+    inline void Reset()
+    {
         SetConsoleTextAttribute(GetStdHandle(STD_OUTPUT_HANDLE), DEFAULT);
     }
 
     // 带颜色的输出辅助函数
-    inline void Print(Color color, const std::string& text) {
+    inline void Print(Color color, const std::string &text)
+    {
         SetColor(color);
         std::cout << text;
         Reset();
     }
 
-    inline void PrintLn(Color color, const std::string& text) {
+    inline void PrintLn(Color color, const std::string &text)
+    {
         SetColor(color);
         std::cout << text << std::endl;
         Reset();
@@ -179,12 +185,13 @@ std::vector<std::string> GetDelayLoadDLLs(PIMAGE_NT_HEADERS ntHeaders, LPVOID ba
 }
 
 // PE文件架构类型枚举
-enum class PEArchitecture {
+enum class PEArchitecture
+{
     Unknown,
-    x86,    // 32-bit (IMAGE_FILE_MACHINE_I386)
-    x64,    // 64-bit (IMAGE_FILE_MACHINE_AMD64)
-    ARM,    // ARM
-    ARM64   // ARM64
+    x86,  // 32-bit (IMAGE_FILE_MACHINE_I386)
+    x64,  // 64-bit (IMAGE_FILE_MACHINE_AMD64)
+    ARM,  // ARM
+    ARM64 // ARM64
 };
 
 // 将架构转换为字符串
@@ -192,17 +199,17 @@ std::string ArchitectureToString(PEArchitecture arch)
 {
     switch (arch)
     {
-        case PEArchitecture::x86:
-            return "x86 (32-bit)";
-        case PEArchitecture::x64:
-            return "x64 (64-bit)";
-        case PEArchitecture::ARM:
-            return "ARM (32-bit)";
-        case PEArchitecture::ARM64:
-            return "ARM64 (64-bit)";
-        case PEArchitecture::Unknown:
-        default:
-            return "Unknown";
+    case PEArchitecture::x86:
+        return "x86 (32-bit)";
+    case PEArchitecture::x64:
+        return "x64 (64-bit)";
+    case PEArchitecture::ARM:
+        return "ARM (32-bit)";
+    case PEArchitecture::ARM64:
+        return "ARM64 (64-bit)";
+    case PEArchitecture::Unknown:
+    default:
+        return "Unknown";
     }
 }
 
@@ -219,7 +226,7 @@ bool AreArchitecturesCompatible(PEArchitecture arch1, PEArchitecture arch2)
 }
 
 // 检测PE文件的架构
-PEArchitecture DetectPEArchitecture(const std::string& filePath)
+PEArchitecture DetectPEArchitecture(const std::string &filePath)
 {
     HandleGuard hFile(CreateFileA(filePath.c_str(), GENERIC_READ, FILE_SHARE_READ,
                                   NULL, OPEN_EXISTING, 0, NULL));
@@ -255,21 +262,482 @@ PEArchitecture DetectPEArchitecture(const std::string& filePath)
     // 根据Machine字段判断架构
     switch (ntHeaders->FileHeader.Machine)
     {
-        case IMAGE_FILE_MACHINE_I386:
-            return PEArchitecture::x86;
-        case IMAGE_FILE_MACHINE_AMD64:
-            return PEArchitecture::x64;
-        case IMAGE_FILE_MACHINE_ARM:
-            return PEArchitecture::ARM;
-        case IMAGE_FILE_MACHINE_ARM64:
-            return PEArchitecture::ARM64;
-        default:
-            return PEArchitecture::Unknown;
+    case IMAGE_FILE_MACHINE_I386:
+        return PEArchitecture::x86;
+    case IMAGE_FILE_MACHINE_AMD64:
+        return PEArchitecture::x64;
+    case IMAGE_FILE_MACHINE_ARM:
+        return PEArchitecture::ARM;
+    case IMAGE_FILE_MACHINE_ARM64:
+        return PEArchitecture::ARM64;
+    default:
+        return PEArchitecture::Unknown;
     }
+}
+
+///////////////////////////////////////////////////////////////////////////////
+// NT API declarations and structures for dynamic KnownDLLs and API Set resolution
+///////////////////////////////////////////////////////////////////////////////
+
+#ifndef NT_SUCCESS
+#define NT_SUCCESS(Status) (((NTSTATUS)(Status)) >= 0)
+#endif
+
+// NT string structure
+typedef struct _UNICODE_STRING {
+    USHORT Length;
+    USHORT MaximumLength;
+    PWSTR  Buffer;
+} UNICODE_STRING, *PUNICODE_STRING;
+
+typedef const UNICODE_STRING *PCUNICODE_STRING;
+
+// Object attributes structure
+typedef struct _OBJECT_ATTRIBUTES {
+    ULONG Length;
+    HANDLE RootDirectory;
+    PUNICODE_STRING ObjectName;
+    ULONG Attributes;
+    PVOID SecurityDescriptor;
+    PVOID SecurityQualityOfService;
+} OBJECT_ATTRIBUTES, *POBJECT_ATTRIBUTES;
+
+#define DIRECTORY_QUERY 0x0001
+#define OBJ_CASE_INSENSITIVE 0x00000040L
+
+// InitializeObjectAttributes macro
+#define InitializeObjectAttributes(p, n, a, r, s) { \
+    (p)->Length = sizeof(OBJECT_ATTRIBUTES); \
+    (p)->RootDirectory = r; \
+    (p)->Attributes = a; \
+    (p)->ObjectName = n; \
+    (p)->SecurityDescriptor = s; \
+    (p)->SecurityQualityOfService = NULL; \
+}
+
+// NT API function pointer types
+typedef NTSTATUS (NTAPI* NtQueryInformationProcessFunc)(
+    HANDLE ProcessHandle,
+    DWORD ProcessInformationClass,
+    PVOID ProcessInformation,
+    ULONG ProcessInformationLength,
+    PULONG ReturnLength
+);
+
+typedef NTSTATUS (NTAPI* NtOpenDirectoryObjectFunc)(
+    PHANDLE DirectoryHandle,
+    ACCESS_MASK DesiredAccess,
+    POBJECT_ATTRIBUTES ObjectAttributes
+);
+
+typedef NTSTATUS (NTAPI* NtQueryDirectoryObjectFunc)(
+    HANDLE DirectoryHandle,
+    PVOID Buffer,
+    ULONG Length,
+    BOOLEAN ReturnSingleEntry,
+    BOOLEAN RestartScan,
+    PULONG Context,
+    PULONG ReturnLength
+);
+
+typedef NTSTATUS (NTAPI* NtCloseFunc)(
+    HANDLE Handle
+);
+
+typedef VOID (NTAPI* RtlInitUnicodeStringFunc)(
+    PUNICODE_STRING DestinationString,
+    PCWSTR SourceString
+);
+
+// Simplified PEB structure
+typedef struct _PEB {
+    BOOLEAN InheritedAddressSpace;
+    BOOLEAN ReadImageFileExecOptions;
+    BOOLEAN BeingDebugged;
+    BOOLEAN SpareBool;
+    HANDLE Mutant;
+    PVOID ImageBaseAddress;
+    PVOID Ldr;
+    PVOID ProcessParameters;
+    PVOID SubSystemData;
+    PVOID ProcessHeap;
+    PVOID FastPebLock;
+    PVOID AtlThunkSListPtr;
+    PVOID IFEOKey;
+    PVOID CrossProcessFlags;
+    PVOID KernelCallbackTable;
+    ULONG SystemReserved;
+    ULONG AtlThunkSListPtr32;
+    PVOID ApiSetMap;  // API Set Schema address
+} PEB, *PPEB;
+
+typedef struct _PROCESS_BASIC_INFORMATION {
+    PVOID Reserved1;
+    PPEB PebBaseAddress;
+    PVOID Reserved2[2];
+    ULONG_PTR UniqueProcessId;
+    PVOID Reserved3;
+} PROCESS_BASIC_INFORMATION, *PPROCESS_BASIC_INFORMATION;
+
+#define ProcessBasicInformation 0
+
+// API Set structure definitions (adapted from ApiSet.h)
+// API Set v2 structures
+typedef struct _API_SET_VALUE_ENTRY_REDIRECTION_V2 {
+    ULONG  NameOffset;
+    USHORT NameLength;
+    ULONG  ValueOffset;
+    USHORT ValueLength;
+} API_SET_VALUE_ENTRY_REDIRECTION_V2, *PAPI_SET_VALUE_ENTRY_REDIRECTION_V2;
+
+typedef struct _API_SET_VALUE_ENTRY_V2 {
+    ULONG NumberOfRedirections;
+    API_SET_VALUE_ENTRY_REDIRECTION_V2 Redirections[1];
+} API_SET_VALUE_ENTRY_V2, *PAPI_SET_VALUE_ENTRY_V2;
+
+typedef struct _API_SET_NAMESPACE_ENTRY_V2 {
+    ULONG NameOffset;
+    ULONG NameLength;
+    ULONG DataOffset;
+} API_SET_NAMESPACE_ENTRY_V2, *PAPI_SET_NAMESPACE_ENTRY_V2;
+
+typedef struct _API_SET_NAMESPACE_V2 {
+    ULONG Version;
+    ULONG Count;
+    API_SET_NAMESPACE_ENTRY_V2 Array[1];
+} API_SET_NAMESPACE_V2, *PAPI_SET_NAMESPACE_V2;
+
+// API Set v4 structures
+typedef struct _API_SET_VALUE_ENTRY_REDIRECTION_V4 {
+    ULONG Flags;
+    ULONG NameOffset;
+    ULONG NameLength;
+    ULONG ValueOffset;
+    ULONG ValueLength;
+} API_SET_VALUE_ENTRY_REDIRECTION_V4, *PAPI_SET_VALUE_ENTRY_REDIRECTION_V4;
+
+typedef struct _API_SET_VALUE_ENTRY_V4 {
+    ULONG Flags;
+    ULONG NumberOfRedirections;
+    API_SET_VALUE_ENTRY_REDIRECTION_V4 Redirections[1];
+} API_SET_VALUE_ENTRY_V4, *PAPI_SET_VALUE_ENTRY_V4;
+
+typedef struct _API_SET_NAMESPACE_ENTRY_V4 {
+    ULONG Flags;
+    ULONG NameOffset;
+    ULONG NameLength;
+    ULONG AliasOffset;
+    ULONG AliasLength;
+    ULONG DataOffset;
+} API_SET_NAMESPACE_ENTRY_V4, *PAPI_SET_NAMESPACE_ENTRY_V4;
+
+typedef struct _API_SET_NAMESPACE_V4 {
+    ULONG Version;
+    ULONG Size;
+    ULONG Flags;
+    ULONG Count;
+    API_SET_NAMESPACE_ENTRY_V4 Array[1];
+} API_SET_NAMESPACE_V4, *PAPI_SET_NAMESPACE_V4;
+
+// API Set v6 structures
+typedef struct _API_SET_NAMESPACE_ENTRY_V6 {
+    ULONG Flags;
+    ULONG NameOffset;
+    ULONG NameLength;
+    ULONG HashedLength;
+    ULONG ValueOffset;
+    ULONG ValueCount;
+} API_SET_NAMESPACE_ENTRY_V6, *PAPI_SET_NAMESPACE_ENTRY_V6;
+
+typedef struct _API_SET_VALUE_ENTRY_V6 {
+    ULONG Flags;
+    ULONG NameOffset;
+    ULONG NameLength;
+    ULONG ValueOffset;
+    ULONG ValueLength;
+} API_SET_VALUE_ENTRY_V6, *PAPI_SET_VALUE_ENTRY_V6;
+
+typedef struct _API_SET_NAMESPACE_V6 {
+    ULONG Version;
+    ULONG Size;
+    ULONG Flags;
+    ULONG Count;
+    ULONG EntryOffset;
+    ULONG HashOffset;
+    ULONG HashFactor;
+} API_SET_NAMESPACE_V6, *PAPI_SET_NAMESPACE_V6;
+
+// Unified API Set namespace structure
+typedef struct _API_SET_NAMESPACE {
+    union {
+        ULONG Version;
+        API_SET_NAMESPACE_V2 ApiSetNameSpaceV2;
+        API_SET_NAMESPACE_V4 ApiSetNameSpaceV4;
+        API_SET_NAMESPACE_V6 ApiSetNameSpaceV6;
+    };
+} API_SET_NAMESPACE, *PAPI_SET_NAMESPACE;
+
+// Object directory information structure
+typedef struct _OBJECT_DIRECTORY_INFORMATION {
+    UNICODE_STRING Name;
+    UNICODE_STRING TypeName;
+} OBJECT_DIRECTORY_INFORMATION, *POBJECT_DIRECTORY_INFORMATION;
+
+///////////////////////////////////////////////////////////////////////////////
+// KnownDLLs and API Set resolution functions
+///////////////////////////////////////////////////////////////////////////////
+
+/**
+ * @brief 从系统读取 KnownDLLs 列表
+ * @param isWow64 是否读取 32 位 KnownDLLs
+ * @return KnownDLLs 名称集合
+ */
+std::set<std::string> GetKnownDllsFromSystem(bool isWow64)
+{
+    static std::set<std::string> cachedKnownDlls[2] = { {}, {} };
+    static bool cached[2] = { false, false };
+
+    int cacheIndex = isWow64 ? 1 : 0;
+    if (cached[cacheIndex]) {
+        return cachedKnownDlls[cacheIndex];
+    }
+
+    HMODULE hNtdll = GetModuleHandleW(L"ntdll.dll");
+    if (!hNtdll) {
+        return {};
+    }
+
+    auto NtOpenDirectoryObject = reinterpret_cast<NtOpenDirectoryObjectFunc>(
+        GetProcAddress(hNtdll, "NtOpenDirectoryObject"));
+    auto NtQueryDirectoryObject = reinterpret_cast<NtQueryDirectoryObjectFunc>(
+        GetProcAddress(hNtdll, "NtQueryDirectoryObject"));
+    auto NtCloseFuncPtr = reinterpret_cast<NtCloseFunc>(
+        GetProcAddress(hNtdll, "NtClose"));
+    auto RtlInitUnicodeStringPtr = reinterpret_cast<RtlInitUnicodeStringFunc>(
+        GetProcAddress(hNtdll, "RtlInitUnicodeString"));
+
+    if (!NtOpenDirectoryObject || !NtQueryDirectoryObject || !NtCloseFuncPtr || !RtlInitUnicodeStringPtr) {
+        return {};
+    }
+
+    // 打开 \KnownDlls 或 \KnownDlls32
+    UNICODE_STRING name;
+    OBJECT_ATTRIBUTES oa;
+    HANDLE knownDllDir = INVALID_HANDLE_VALUE;
+    const wchar_t* knownDllObjectName = isWow64 ? L"\\KnownDlls32" : L"\\KnownDlls";
+
+    RtlInitUnicodeStringPtr(&name, knownDllObjectName);
+    InitializeObjectAttributes(&oa, &name, 0, NULL, NULL);
+
+    NTSTATUS status = NtOpenDirectoryObject(&knownDllDir, DIRECTORY_QUERY, &oa);
+    if (!NT_SUCCESS(status)) {
+        return {};
+    }
+
+    // 枚举目录对象
+    BYTE buffer[4096];
+    ULONG context = 0;
+    ULONG returnLength;
+
+    while (NT_SUCCESS(NtQueryDirectoryObject(
+        knownDllDir,
+        buffer,
+        sizeof(buffer),
+        FALSE,
+        FALSE,
+        &context,
+        &returnLength))) {
+
+        POBJECT_DIRECTORY_INFORMATION info = (POBJECT_DIRECTORY_INFORMATION)buffer;
+        if (info->Name.Buffer && info->TypeName.Buffer) {
+            std::wstring typeName(info->TypeName.Buffer, info->TypeName.Length / sizeof(WCHAR));
+            if (typeName == L"Section") {
+                std::wstring dllName(info->Name.Buffer, info->Name.Length / sizeof(WCHAR));
+
+                // 转换为 ANSI
+                int size = WideCharToMultiByte(CP_UTF8, 0, dllName.c_str(), -1, nullptr, 0, nullptr, nullptr);
+                std::string ansiName(size - 1, 0);
+                WideCharToMultiByte(CP_UTF8, 0, dllName.c_str(), -1, &ansiName[0], size, nullptr, nullptr);
+
+                cachedKnownDlls[cacheIndex].insert(ansiName);
+            }
+        }
+    }
+
+    NtCloseFuncPtr(knownDllDir);
+    cached[cacheIndex] = true;
+    return cachedKnownDlls[cacheIndex];
+}
+
+/**
+ * @brief 从 PEB 获取 API Set Namespace
+ */
+PAPI_SET_NAMESPACE GetApiSetNamespace()
+{
+    static PAPI_SET_NAMESPACE cachedNamespace = nullptr;
+    static bool cached = false;
+
+    if (cached) {
+        return cachedNamespace;
+    }
+
+    HMODULE hNtdll = GetModuleHandleW(L"ntdll.dll");
+    if (!hNtdll) {
+        return nullptr;
+    }
+
+    auto NtQueryInformationProcess = reinterpret_cast<NtQueryInformationProcessFunc>(
+        GetProcAddress(hNtdll, "NtQueryInformationProcess"));
+
+    if (!NtQueryInformationProcess) {
+        return nullptr;
+    }
+
+    PROCESS_BASIC_INFORMATION pbi;
+    ULONG returnLength;
+    NTSTATUS status = NtQueryInformationProcess(
+        GetCurrentProcess(),
+        ProcessBasicInformation,
+        &pbi,
+        sizeof(pbi),
+        &returnLength
+    );
+
+    if (!NT_SUCCESS(status) || !pbi.PebBaseAddress) {
+        return nullptr;
+    }
+
+    cachedNamespace = static_cast<PAPI_SET_NAMESPACE>(pbi.PebBaseAddress->ApiSetMap);
+    cached = true;
+    return cachedNamespace;
+}
+
+/**
+ * @brief 将 API Set 名称解析为物理 DLL 名称
+ * @param apiSetName API Set 虚拟名称（如 "api-ms-win-crt-runtime-l1-1-0"）
+ * @return 物理 DLL 名称（如 "ucrtbase.dll"），失败返回空字符串
+ */
+std::string ResolveApiSetToDll(const std::string& apiSetName)
+{
+    std::string lowerName = apiSetName;
+    std::transform(lowerName.begin(), lowerName.end(), lowerName.begin(), ::tolower);
+
+    // 移除前缀
+    std::string searchName;
+    if (lowerName.find("api-ms-win-") == 0) {
+        searchName = lowerName.substr(11);
+    } else if (lowerName.find("ext-ms-") == 0) {
+        searchName = lowerName.substr(7);
+    } else {
+        return "";
+    }
+
+    PAPI_SET_NAMESPACE apiSetMap = GetApiSetNamespace();
+    if (!apiSetMap) {
+        return "";
+    }
+
+    ULONG_PTR base = reinterpret_cast<ULONG_PTR>(apiSetMap);
+
+    // 根据版本解析
+    switch (apiSetMap->Version) {
+        case 2: {
+            PAPI_SET_NAMESPACE_V2 mapV2 = &apiSetMap->ApiSetNameSpaceV2;
+            for (ULONG i = 0; i < mapV2->Count; i++) {
+                PAPI_SET_NAMESPACE_ENTRY_V2 entry = &mapV2->Array[i];
+                PWCHAR nameBuffer = reinterpret_cast<PWCHAR>(base + entry->NameOffset);
+                std::wstring entryName(nameBuffer, entry->NameLength / sizeof(WCHAR));
+
+                std::string entryNameLower;
+                std::transform(entryName.begin(), entryName.end(),
+                             std::back_inserter(entryNameLower), ::tolower);
+
+                if (entryNameLower.find(searchName) == 0) {
+                    PAPI_SET_VALUE_ENTRY_V2 valueEntry = reinterpret_cast<PAPI_SET_VALUE_ENTRY_V2>(
+                        base + entry->DataOffset);
+                    if (valueEntry->NumberOfRedirections > 0) {
+                        PWCHAR valueBuffer = reinterpret_cast<PWCHAR>(
+                            base + valueEntry->Redirections[0].ValueOffset);
+                        std::wstring dllName(valueBuffer, valueEntry->Redirections[0].ValueLength / sizeof(WCHAR));
+
+                        int size = WideCharToMultiByte(CP_UTF8, 0, dllName.c_str(), -1, nullptr, 0, nullptr, nullptr);
+                        std::string result(size - 1, 0);
+                        WideCharToMultiByte(CP_UTF8, 0, dllName.c_str(), -1, &result[0], size, nullptr, nullptr);
+                        return result;
+                    }
+                }
+            }
+            break;
+        }
+        case 4: {
+            PAPI_SET_NAMESPACE_V4 mapV4 = &apiSetMap->ApiSetNameSpaceV4;
+            for (ULONG i = 0; i < mapV4->Count; i++) {
+                PAPI_SET_NAMESPACE_ENTRY_V4 entry = &mapV4->Array[i];
+                PWCHAR nameBuffer = reinterpret_cast<PWCHAR>(base + entry->NameOffset);
+                std::wstring entryName(nameBuffer, entry->NameLength / sizeof(WCHAR));
+
+                std::string entryNameLower;
+                std::transform(entryName.begin(), entryName.end(),
+                             std::back_inserter(entryNameLower), ::tolower);
+
+                if (entryNameLower.find(searchName) == 0) {
+                    PAPI_SET_VALUE_ENTRY_V4 valueEntry = reinterpret_cast<PAPI_SET_VALUE_ENTRY_V4>(
+                        base + entry->DataOffset);
+                    if (valueEntry->NumberOfRedirections > 0) {
+                        PWCHAR valueBuffer = reinterpret_cast<PWCHAR>(
+                            base + valueEntry->Redirections[0].ValueOffset);
+                        std::wstring dllName(valueBuffer, valueEntry->Redirections[0].ValueLength / sizeof(WCHAR));
+
+                        int size = WideCharToMultiByte(CP_UTF8, 0, dllName.c_str(), -1, nullptr, 0, nullptr, nullptr);
+                        std::string result(size - 1, 0);
+                        WideCharToMultiByte(CP_UTF8, 0, dllName.c_str(), -1, &result[0], size, nullptr, nullptr);
+                        return result;
+                    }
+                }
+            }
+            break;
+        }
+        case 6: {
+            PAPI_SET_NAMESPACE_V6 mapV6 = &apiSetMap->ApiSetNameSpaceV6;
+            PAPI_SET_NAMESPACE_ENTRY_V6 entries = reinterpret_cast<PAPI_SET_NAMESPACE_ENTRY_V6>(
+                base + mapV6->EntryOffset);
+
+            for (ULONG i = 0; i < mapV6->Count; i++) {
+                PAPI_SET_NAMESPACE_ENTRY_V6 entry = &entries[i];
+                PWCHAR nameBuffer = reinterpret_cast<PWCHAR>(base + entry->NameOffset);
+                std::wstring entryName(nameBuffer, entry->NameLength / sizeof(WCHAR));
+
+                std::string entryNameLower;
+                std::transform(entryName.begin(), entryName.end(),
+                             std::back_inserter(entryNameLower), ::tolower);
+
+                if (entryNameLower.find(searchName) == 0) {
+                    PAPI_SET_VALUE_ENTRY_V6 valueEntry = reinterpret_cast<PAPI_SET_VALUE_ENTRY_V6>(
+                        base + entry->ValueOffset);
+                    if (entry->ValueCount > 0) {
+                        PWCHAR valueBuffer = reinterpret_cast<PWCHAR>(
+                            base + valueEntry->ValueOffset);
+                        std::wstring dllName(valueBuffer, valueEntry->ValueLength / sizeof(WCHAR));
+
+                        int size = WideCharToMultiByte(CP_UTF8, 0, dllName.c_str(), -1, nullptr, 0, nullptr, nullptr);
+                        std::string result(size - 1, 0);
+                        WideCharToMultiByte(CP_UTF8, 0, dllName.c_str(), -1, &result[0], size, nullptr, nullptr);
+                        return result;
+                    }
+                }
+            }
+            break;
+        }
+        default:
+            break;
+    }
+
+    return "";
 }
 
 // 前向声明
 std::vector<std::string> ParseFileDependencies(const char *filePath);
+bool IsCppRuntimeDLL(const std::string &dllName);
 bool IsSystemCoreDLL(const std::string &dllName);
 bool IsSystemDirectory(const std::string &dllPath);
 std::vector<std::string> GetDependentDLLs(const char *executablePath, bool recursive = false, const std::vector<std::string> &extraDirs = {}, PEArchitecture targetArch = PEArchitecture::Unknown);
@@ -278,8 +746,17 @@ void GetRecursiveDependentDLLs(const std::string &dllPath, const std::string &ex
 bool CopyDependentDLLs(const std::vector<std::string> &dllList, const std::string &exePath, const std::string &destDir, const std::vector<std::string> &extraDirs = {}, bool copyAll = false, PEArchitecture targetArch = PEArchitecture::Unknown);
 
 // 全局集合，用于跟踪已处理的DLL，避免重复和循环依赖
-std::set<std::string> processedDLLs;
-std::set<std::string> globalDLLSet;
+// Windows PE 导入表中的 DLL 名称大小写不固定，使用不区分大小写的比较器防止重复处理
+struct CaseInsensitiveCompare
+{
+    bool operator()(const std::string &a, const std::string &b) const
+    {
+        return _stricmp(a.c_str(), b.c_str()) < 0;
+    }
+};
+
+std::set<std::string, CaseInsensitiveCompare> processedDLLs;
+std::set<std::string, CaseInsensitiveCompare> globalDLLSet;
 
 // 全局变量：最大递归深度
 int g_maxRecursionDepth = 20;
@@ -309,23 +786,51 @@ void GetRecursiveDependentDLLs(const std::string &dllPath, const std::string &ex
         return;
     }
 
+    // ✓ 在解析依赖之前判断当前DLL的类型
+    bool isSystemDLL = IsSystemCoreDLL(dllName);
+    bool isCppRuntime = IsCppRuntimeDLL(dllName);
+
     // 标记为已处理
     processedDLLs.insert(dllPath);
+
+    if (isSystemDLL)
+    {
+        // 系统 DLL：视而不见（不分析、不拷贝）
+        std::cout << std::string(depth * 2, ' ') << "[System DLL] Ignored: " << dllName << std::endl;
+        return;  // 不添加到集合，不解析依赖，直接返回
+    }
+
+    if (isCppRuntime)
+    {
+        // C++ 运行库：只拿文件，不问祖宗（拷贝，不递归）
+        std::cout << std::string(depth * 2, ' ') << "[C++ Runtime] Copy only, no recursion: " << dllName << std::endl;
+        globalDLLSet.insert(dllName);  // 添加到集合以便拷贝
+        return;  // 不解析依赖
+    }
+
+    // 自己的 DLL：追根溯源（拷贝并递归）
+    std::cout << std::string(depth * 2, ' ') << "Analyzing: " << dllName << " (depth: " << depth << ")" << std::endl;
     globalDLLSet.insert(dllName);
 
-    std::cout << std::string(depth * 2, ' ') << "Analyzing: " << dllName << " (depth: " << depth << ")" << std::endl;
-
-    // 获取这个DLL的依赖
+    // ✓ 只对需要递归的 DLL 解析依赖
     std::vector<std::string> dependencies = ParseFileDependencies(dllPath.c_str());
 
     // 递归处理每个依赖
     for (const auto &depName : dependencies)
     {
-        // 检查是否为系统核心DLL
+        // 检查是否为系统核心DLL - 视而不见（不分析、不拷贝）
         if (IsSystemCoreDLL(depName))
         {
-            std::cout << std::string((depth + 1) * 2, ' ') << "[System Core DLL] Skipped: " << depName << std::endl;
-            // 仍然添加到集合中，但不再递归分析
+            std::cout << std::string((depth + 1) * 2, ' ') << "[System DLL] Ignored: " << depName << std::endl;
+            // 系统DLL不添加到集合，不递归分析
+            continue;
+        }
+
+        // 检查是否为C++运行库 - 只拿文件，不问祖宗（拷贝，不递归）
+        if (IsCppRuntimeDLL(depName))
+        {
+            std::cout << std::string((depth + 1) * 2, ' ') << "[C++ Runtime] Copy only, no recursion: " << depName << std::endl;
+            // 添加到集合中以便拷贝，但不递归分析其依赖
             globalDLLSet.insert(depName);
             continue;
         }
@@ -344,7 +849,7 @@ void GetRecursiveDependentDLLs(const std::string &dllPath, const std::string &ex
         // 这样在复制阶段会重新查找架构匹配的DLL
         globalDLLSet.insert(depName);
 
-        // 递归分析这个DLL的依赖
+        // 递归分析这个DLL的依赖 - 追根溯源（拷贝并递归）
         GetRecursiveDependentDLLs(depPath, exeDir, depth + 1, extraDirs, targetArch);
     }
 }
@@ -419,51 +924,53 @@ std::vector<std::string> ParseFileDependencies(const char *filePath)
         DWORD importDirOffset = RvaToFileOffset(ntHeaders, importDir.VirtualAddress);
         if (importDirOffset == 0)
         {
-            std::cerr << "Error: Unable to convert import table RVA to file offset" << std::endl;
-            return dllList;
+            std::cerr << "Warning: Unable to convert import table RVA to file offset, skipping import table" << std::endl;
         }
-
-        PIMAGE_IMPORT_DESCRIPTOR importDescriptor = (PIMAGE_IMPORT_DESCRIPTOR)((BYTE *)(LPVOID)baseAddress + importDirOffset);
-        size_t importTableSize = importDir.Size;
-        size_t maxDescriptorCount = importTableSize / sizeof(IMAGE_IMPORT_DESCRIPTOR);
-
-        const size_t MAX_DLL_NAME_LEN = 256;
-        std::cout << "Starting to scan import table, up to " << maxDescriptorCount << " entries..." << std::endl;
-
-        for (size_t i = 0; i < maxDescriptorCount; ++i)
+        else
         {
-            if (importDescriptor[i].Name == 0)
-                break;
 
-            // 将DLL名称RVA转换为文件偏移量
-            DWORD nameOffset = RvaToFileOffset(ntHeaders, importDescriptor[i].Name);
-            if (nameOffset == 0)
+            PIMAGE_IMPORT_DESCRIPTOR importDescriptor = (PIMAGE_IMPORT_DESCRIPTOR)((BYTE *)(LPVOID)baseAddress + importDirOffset);
+            size_t importTableSize = importDir.Size;
+            size_t maxDescriptorCount = importTableSize / sizeof(IMAGE_IMPORT_DESCRIPTOR);
+
+            const size_t MAX_DLL_NAME_LEN = 256;
+            std::cout << "Starting to scan import table, up to " << maxDescriptorCount << " entries..." << std::endl;
+
+            for (size_t i = 0; i < maxDescriptorCount; ++i)
             {
-                std::cerr << "Warning: Skipping invalid DLL name RVA: 0x" << std::hex << importDescriptor[i].Name << std::endl;
-                continue;
+                if (importDescriptor[i].Name == 0)
+                    break;
+
+                // 将DLL名称RVA转换为文件偏移量
+                DWORD nameOffset = RvaToFileOffset(ntHeaders, importDescriptor[i].Name);
+                if (nameOffset == 0)
+                {
+                    std::cerr << "Warning: Skipping invalid DLL name RVA: 0x" << std::hex << importDescriptor[i].Name << std::endl;
+                    continue;
+                }
+
+                const BYTE *dllNameAddr = (BYTE *)(LPVOID)baseAddress + nameOffset;
+                if (dllNameAddr < (BYTE *)(LPVOID)baseAddress || dllNameAddr >= ((BYTE *)(LPVOID)baseAddress + fileSize))
+                {
+                    std::cerr << "Warning: Skipping out-of-bounds DLL name address" << std::endl;
+                    continue;
+                }
+
+                // 检查字符串长度和结尾
+                size_t len = strnlen((const char *)dllNameAddr, MAX_DLL_NAME_LEN);
+                if (len == MAX_DLL_NAME_LEN || dllNameAddr + len >= ((BYTE *)(LPVOID)baseAddress + fileSize))
+                {
+                    std::cerr << "Warning: Skipping invalid or out-of-bounds DLL name string" << std::endl;
+                    continue;
+                }
+
+                std::string dllName((const char *)dllNameAddr, len);
+                dllSet.insert(dllName);
+                std::cout << "Found DLL: " << dllName << std::endl;
             }
 
-            const BYTE *dllNameAddr = (BYTE *)(LPVOID)baseAddress + nameOffset;
-            if (dllNameAddr < (BYTE *)(LPVOID)baseAddress || dllNameAddr >= ((BYTE *)(LPVOID)baseAddress + fileSize))
-            {
-                std::cerr << "Warning: Skipping out-of-bounds DLL name address" << std::endl;
-                continue;
-            }
-
-            // 检查字符串长度和结尾
-            size_t len = strnlen((const char *)dllNameAddr, MAX_DLL_NAME_LEN);
-            if (len == MAX_DLL_NAME_LEN || dllNameAddr + len >= ((BYTE *)(LPVOID)baseAddress + fileSize))
-            {
-                std::cerr << "Warning: Skipping invalid or out-of-bounds DLL name string" << std::endl;
-                continue;
-            }
-
-            std::string dllName((const char *)dllNameAddr, len);
-            dllSet.insert(dllName);
-            std::cout << "Found DLL: " << dllName << std::endl;
-        }
-
-        std::cout << "Completed scanning regular import table, found " << dllSet.size() << " dependent DLLs" << std::endl;
+            std::cout << "Completed scanning regular import table, found " << dllSet.size() << " dependent DLLs" << std::endl;
+        } // else importDirOffset != 0
     }
     else
     {
@@ -560,6 +1067,9 @@ const std::set<std::string> systemCoreDLLs = {
     "VERSION.DLL",
     "IMM32.dll",
     "IMM32.DLL",
+    "WINMM.DLL",
+    "WINMM.dll",
+    "MSVCRT.DLL",
     "NTDLL.dll",
     "NTDLL.DLL",
     "CRYPT32.dll",
@@ -567,29 +1077,66 @@ const std::set<std::string> systemCoreDLLs = {
     "RPCRT4.dll",
     "RPCRT4.DLL",
     "SHLWAPI.dll",
-    "SHLWAPI.DLL"};
+    "SHLWAPI.DLL",
+};
 
 // 判断DLL是否为系统核心DLL
 bool IsSystemCoreDLL(const std::string &dllName)
 {
-    // 转换为大写进行比较
     std::string upperDllName = dllName;
     std::transform(upperDllName.begin(), upperDllName.end(), upperDllName.begin(), ::toupper);
 
-    // 1. 检查是否为 API Sets 虚拟库
-    // API Sets 是虚拟 DLL，以 api-ms-win- 或 ext-ms- 开头
-    if (upperDllName.find("API-MS-WIN-") == 0 || upperDllName.find("EXT-MS-") == 0)
-    {
+    // 1. 检查 API Sets - 解析到物理 DLL 并判断
+    if (upperDllName.find("API-MS-WIN-") == 0 || upperDllName.find("EXT-MS-") == 0) {
+        std::string resolvedDll = ResolveApiSetToDll(dllName);
+        if (!resolvedDll.empty()) {
+            // 如果解析到 C++ 运行时，需要复制
+            if (IsCppRuntimeDLL(resolvedDll)) {
+                return false;
+            }
+            // 其他 API Sets 解析到的都是系统 DLL
+            return true;
+        }
+        // 无法解析的 API Set，检查是否为 C++ 运行时相关的 API Set
+        if (IsCppRuntimeDLL(dllName)) {
+            return false;
+        }
+        // 无法解析的非 C++ 运行时 API Set 默认为系统 DLL
         return true;
     }
 
-    // 2. 检查是否在系统核心DLL列表中
-    for (const auto &systemDll : systemCoreDLLs)
-    {
+    // 2. 动态检查 KnownDLLs
+    BOOL isWow64 = FALSE;
+#if defined(_WIN64)
+    IsWow64Process(GetCurrentProcess(), &isWow64);
+#else
+    isWow64 = TRUE;
+#endif
+
+    static std::set<std::string> knownDlls = GetKnownDllsFromSystem(isWow64);
+
+    for (const auto& knownDll : knownDlls) {
+        std::string upperKnownDll = knownDll;
+        std::transform(upperKnownDll.begin(), upperKnownDll.end(), upperKnownDll.begin(), ::toupper);
+        if (upperDllName == upperKnownDll) {
+            // C++ 运行时需要复制，即使它在 KnownDLLs 中
+            if (IsCppRuntimeDLL(dllName)) {
+                return false;
+            }
+            return true;
+        }
+    }
+
+    // 3. 补充：使用硬编码列表作为后备
+    // 即使 GetKnownDllsFromSystem 返回了结果，也检查硬编码列表
+    // 因为 KnownDLLs 可能不完整，需要硬编码列表作为补充
+    for (const auto &systemDll : systemCoreDLLs) {
         std::string upperSystemDll = systemDll;
         std::transform(upperSystemDll.begin(), upperSystemDll.end(), upperSystemDll.begin(), ::toupper);
-        if (upperDllName == upperSystemDll)
-        {
+        if (upperDllName == upperSystemDll) {
+            if (IsCppRuntimeDLL(dllName)) {
+                return false;
+            }
             return true;
         }
     }
@@ -600,41 +1147,42 @@ bool IsSystemCoreDLL(const std::string &dllName)
 // 检查是否为 C++ 运行库 DLL
 bool IsCppRuntimeDLL(const std::string &dllName)
 {
-    // 转换为大写进行比较
     std::string upperDllName = dllName;
     std::transform(upperDllName.begin(), upperDllName.end(), upperDllName.begin(), ::toupper);
 
-    // 检查是否为 C 运行库 (MSVCR*.dll, VCRUNTIME*.dll)
-    if (upperDllName.find("MSVCR") == 0 && upperDllName.find(".DLL") == upperDllName.length() - 4)
-    {
-        return true;
+    // 排除 msvcp_win.dll，它是系统内置的
+    if (upperDllName == "MSVCP_WIN.DLL") {
+        return false;
     }
-    if (upperDllName.find("VCRUNTIME") == 0 && upperDllName.find(".DLL") == upperDllName.length() - 4)
-    {
+
+    // C 运行库
+    if ((upperDllName.find("MSVCR") == 0 || upperDllName.find("VCRUNTIME") == 0) &&
+        upperDllName.find(".DLL") == upperDllName.length() - 4) {
         return true;
     }
 
-    // 检查是否为 C++ 标准库 (MSVCP*.dll)
-    if (upperDllName.find("MSVCP") == 0 && upperDllName.find(".DLL") == upperDllName.length() - 4)
-    {
+    // C++ 标准库
+    if (upperDllName.find("MSVCP") == 0 && upperDllName.find(".DLL") == upperDllName.length() - 4) {
         return true;
     }
 
-    // 检查是否为 C++/CX 库 (VCCORLIB*.dll)
-    if (upperDllName.find("VCCORLIB") == 0 && upperDllName.find(".DLL") == upperDllName.length() - 4)
-    {
+    // C++/CX 库
+    if (upperDllName.find("VCCORLIB") == 0 && upperDllName.find(".DLL") == upperDllName.length() - 4) {
         return true;
     }
 
-    // 检查是否为 Universal C Runtime (UCRTBASE.dll)
-    if (upperDllName == "UCRTBASE.DLL")
-    {
+    // UCRT
+    if (upperDllName == "UCRTBASE.DLL") {
         return true;
     }
 
-    // 检查是否为 ConcRT 库 (CONCRT*.dll)
-    if (upperDllName.find("CONCRT") == 0 && upperDllName.find(".DLL") == upperDllName.length() - 4)
-    {
+    // ConcRT
+    if (upperDllName.find("CONCRT") == 0 && upperDllName.find(".DLL") == upperDllName.length() - 4) {
+        return true;
+    }
+
+    // UCRT API Sets
+    if (upperDllName.find("API-MS-WIN-CRT-") == 0) {
         return true;
     }
 
@@ -698,8 +1246,7 @@ bool IsSystemDirectory(const std::string &dllPath)
                 "SYSTEM32",
                 "SYSWOW64",
                 "WINSXS",
-                "GLOBALIZATION"
-            };
+                "GLOBALIZATION"};
 
             for (const auto &subDir : systemSubDirs)
             {
@@ -959,7 +1506,7 @@ std::string FindDLLFile(const std::string &dllName, const std::string &exeDir, c
     // 首先在额外指定的目录中查找（最高优先级）
     for (const auto &dir : extraDirs)
     {
-        std::string dllPath = dir + "\\" + dllName;
+        std::string dllPath = (std::filesystem::path(dir) / dllName).string();
         if (PathFileExistsA(dllPath.c_str()))
         {
             if (targetArch == PEArchitecture::Unknown)
@@ -990,7 +1537,7 @@ std::string FindDLLFile(const std::string &dllName, const std::string &exeDir, c
     }
 
     // 在可执行文件目录中查找
-    std::string dllPath = exeDir + "\\" + dllName;
+    std::string dllPath = (std::filesystem::path(exeDir) / dllName).string();
     if (PathFileExistsA(dllPath.c_str()))
     {
         if (targetArch == PEArchitecture::Unknown)
@@ -1021,7 +1568,7 @@ std::string FindDLLFile(const std::string &dllName, const std::string &exeDir, c
     // 在当前工作目录中查找
     char currentDir[MAX_PATH];
     GetCurrentDirectoryA(MAX_PATH, currentDir);
-    dllPath = std::string(currentDir) + "\\" + dllName;
+    dllPath = (std::filesystem::path(currentDir) / dllName).string();
     if (PathFileExistsA(dllPath.c_str()))
     {
         if (targetArch == PEArchitecture::Unknown)
@@ -1050,7 +1597,7 @@ std::string FindDLLFile(const std::string &dllName, const std::string &exeDir, c
     }
 
     // 在系统目录中查找
-    dllPath = GetSystemDirectory() + "\\" + dllName;
+    dllPath = (std::filesystem::path(GetSystemDirectory()) / dllName).string();
     if (PathFileExistsA(dllPath.c_str()))
     {
         if (targetArch == PEArchitecture::Unknown)
@@ -1079,7 +1626,7 @@ std::string FindDLLFile(const std::string &dllName, const std::string &exeDir, c
     }
 
     // 在Windows目录中查找
-    dllPath = GetWindowsDirectory() + "\\" + dllName;
+    dllPath = (std::filesystem::path(GetWindowsDirectory()) / dllName).string();
     if (PathFileExistsA(dllPath.c_str()))
     {
         if (targetArch == PEArchitecture::Unknown)
@@ -1111,7 +1658,7 @@ std::string FindDLLFile(const std::string &dllName, const std::string &exeDir, c
     auto pathDirs = GetPathDirectories();
     for (const auto &dir : pathDirs)
     {
-        dllPath = dir + "\\" + dllName;
+        dllPath = (std::filesystem::path(dir) / dllName).string();
         if (PathFileExistsA(dllPath.c_str()))
         {
             if (targetArch == PEArchitecture::Unknown)
@@ -1161,7 +1708,7 @@ bool CopyFileToDirectory(const std::string &sourcePath, const std::string &destD
 
     // 构造目标文件路径
     std::string fileName = std::filesystem::path(sourcePath).filename().string();
-    std::string destPath = destDir + "\\" + fileName;
+    std::string destPath = (std::filesystem::path(destDir) / fileName).string();
 
     // 检查目标文件是否已存在
     if (PathFileExistsA(destPath.c_str()))
@@ -1171,7 +1718,7 @@ bool CopyFileToDirectory(const std::string &sourcePath, const std::string &destD
     }
 
     // 复制文件
-    if (CopyFileA(sourcePath.c_str(), destPath.c_str(), FALSE))
+    if (CopyFileA(sourcePath.c_str(), destPath.c_str(), TRUE))
     {
         ConsoleColors::Print(ConsoleColors::GREEN, "✓ Successfully copied: ");
         ConsoleColors::PrintLn(ConsoleColors::BRIGHT_CYAN, fileName);
@@ -1222,7 +1769,10 @@ bool CopyDependentDLLs(const std::vector<std::string> &dllList, const std::strin
     int ignoredCount = 0;
 
     std::vector<std::string> succeededDLLs;
-    std::vector<std::string> failedDLLs;  // Format: "dllName:reason"
+    std::vector<std::string> failedDLLs; // Format: "dllName:reason"
+
+    // Cache PATH directories to avoid repeated parsing inside the loop
+    auto pathDirs = GetPathDirectories();
 
     for (const auto &dllName : dllList)
     {
@@ -1249,7 +1799,7 @@ bool CopyDependentDLLs(const std::vector<std::string> &dllList, const std::strin
             // 检查各个搜索位置
             for (const auto &dir : extraDirs)
             {
-                std::string testPath = dir + "\\" + dllName;
+                std::string testPath = (std::filesystem::path(dir) / dllName).string();
                 if (PathFileExistsA(testPath.c_str()))
                 {
                     anyFileFound = true;
@@ -1259,7 +1809,7 @@ bool CopyDependentDLLs(const std::vector<std::string> &dllList, const std::strin
 
             if (!anyFileFound)
             {
-                std::string testPath = exeDir + "\\" + dllName;
+                std::string testPath = (std::filesystem::path(exeDir) / dllName).string();
                 if (PathFileExistsA(testPath.c_str()))
                 {
                     anyFileFound = true;
@@ -1270,7 +1820,7 @@ bool CopyDependentDLLs(const std::vector<std::string> &dllList, const std::strin
             {
                 char currentDir[MAX_PATH];
                 GetCurrentDirectoryA(MAX_PATH, currentDir);
-                std::string testPath = std::string(currentDir) + "\\" + dllName;
+                std::string testPath = (std::filesystem::path(currentDir) / dllName).string();
                 if (PathFileExistsA(testPath.c_str()))
                 {
                     anyFileFound = true;
@@ -1279,7 +1829,7 @@ bool CopyDependentDLLs(const std::vector<std::string> &dllList, const std::strin
 
             if (!anyFileFound)
             {
-                std::string testPath = GetSystemDirectory() + "\\" + dllName;
+                std::string testPath = (std::filesystem::path(GetSystemDirectory()) / dllName).string();
                 if (PathFileExistsA(testPath.c_str()))
                 {
                     anyFileFound = true;
@@ -1288,7 +1838,7 @@ bool CopyDependentDLLs(const std::vector<std::string> &dllList, const std::strin
 
             if (!anyFileFound)
             {
-                std::string testPath = GetWindowsDirectory() + "\\" + dllName;
+                std::string testPath = (std::filesystem::path(GetWindowsDirectory()) / dllName).string();
                 if (PathFileExistsA(testPath.c_str()))
                 {
                     anyFileFound = true;
@@ -1297,10 +1847,9 @@ bool CopyDependentDLLs(const std::vector<std::string> &dllList, const std::strin
 
             if (!anyFileFound)
             {
-                auto pathDirs = GetPathDirectories();
                 for (const auto &dir : pathDirs)
                 {
-                    std::string testPath = dir + "\\" + dllName;
+                    std::string testPath = (std::filesystem::path(dir) / dllName).string();
                     if (PathFileExistsA(testPath.c_str()))
                     {
                         anyFileFound = true;
@@ -1360,9 +1909,8 @@ bool CopyDependentDLLs(const std::vector<std::string> &dllList, const std::strin
         }
         else
         {
-            std::string reason = "Copy failed (Error code: " + std::to_string(GetLastError()) + ")";
             failCount++;
-            failedDLLs.push_back(dllName + ":" + reason);
+            failedDLLs.push_back(dllName + ":Copy failed (see error above)");
         }
     }
 
@@ -1382,19 +1930,22 @@ bool CopyDependentDLLs(const std::vector<std::string> &dllList, const std::strin
     {
         std::cout << "\n";
         ConsoleColors::PrintLn(ConsoleColors::GREEN, "Successfully copied DLLs:");
-        for (const auto& dllInfo : succeededDLLs)
+        for (const auto &dllInfo : succeededDLLs)
         {
             std::cout << "  ";
             ConsoleColors::Print(ConsoleColors::GREEN, "[OK] ");
             // 分割 DLL 名称和路径（使用 "::" 作为分隔符以避免与 Windows 路径中的 ":" 冲突）
             size_t sepPos = dllInfo.find("::");
-            if (sepPos != std::string::npos) {
+            if (sepPos != std::string::npos)
+            {
                 std::string dllName = dllInfo.substr(0, sepPos);
                 std::string path = dllInfo.substr(sepPos + 2);
                 ConsoleColors::Print(ConsoleColors::BRIGHT_CYAN, dllName);
                 std::cout << ": ";
                 ConsoleColors::PrintLn(ConsoleColors::DEFAULT, path);
-            } else {
+            }
+            else
+            {
                 ConsoleColors::PrintLn(ConsoleColors::DEFAULT, dllInfo);
             }
         }
@@ -1405,19 +1956,22 @@ bool CopyDependentDLLs(const std::vector<std::string> &dllList, const std::strin
     {
         std::cout << "\n";
         ConsoleColors::PrintLn(ConsoleColors::RED, "Failed to copy DLLs:");
-        for (const auto& dllInfo : failedDLLs)
+        for (const auto &dllInfo : failedDLLs)
         {
             std::cout << "  ";
             ConsoleColors::Print(ConsoleColors::RED, "[FAIL] ");
             // 分割 DLL 名称和原因
             size_t colonPos = dllInfo.find(':');
-            if (colonPos != std::string::npos) {
+            if (colonPos != std::string::npos)
+            {
                 std::string dllName = dllInfo.substr(0, colonPos);
                 std::string reason = dllInfo.substr(colonPos + 1);
                 ConsoleColors::Print(ConsoleColors::BRIGHT_RED, dllName);
                 std::cout << " - ";
                 ConsoleColors::PrintLn(ConsoleColors::YELLOW, reason);
-            } else {
+            }
+            else
+            {
                 ConsoleColors::PrintLn(ConsoleColors::BRIGHT_RED, dllInfo);
             }
         }
