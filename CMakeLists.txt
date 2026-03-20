@@ -8,7 +8,7 @@ project(win_deploy
     DESCRIPTION "Windows DLL dependency analyzer and deployment tool"
     LANGUAGES CXX
 )
-
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/bin)
 # Project version configuration (explicit for flexibility)
 set(PROJECT_VERSION_MAJOR 1)
 set(PROJECT_VERSION_MINOR 2)
@@ -21,7 +21,6 @@ set(PROJECT_NAME "win_deploy")
 set(CMAKE_CXX_STANDARD 17)
 set(CXX_STANDARD_REQUIRED true)
 include_directories("${CMAKE_SOURCE_DIR}")
-set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
 set(
     SOURCES
